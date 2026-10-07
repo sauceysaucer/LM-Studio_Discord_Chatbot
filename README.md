@@ -35,14 +35,6 @@ AUTHORIZED_USER_IDS=YOUR_DISCORD_USER_ID_HERE
 #LM_TIMEOUT_MS=120000
 ```
 
-## Running
-
-```bash
-npm run selfbot
-```
-
-The regular bot is unaffected and still runs with `npm start`.
-
 ## Commands
 
 Identical to the regular bot: `!prompt`, `!memory_size`, `!context`, `!followup`, `!cooldown`, `!help`. By default only users listed in `AUTHORIZED_USER_IDS` can use them.
