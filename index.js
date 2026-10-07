@@ -1,13 +1,17 @@
-import { Client, GatewayIntentBits } from 'discord.js';
+// Self-bot variant: runs on a real user account using discord.js-selfbot-v13.
+// NOTE: Automating a user account violates Discord's Terms of Service and can
+// get the account permanently banned. Use at your own risk.
+
+import { Client } from 'discord.js-selfbot-v13';
 import dotenv from 'dotenv';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 
 // Load environment variables
 dotenv.config();
 
-const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
-if (!DISCORD_BOT_TOKEN) {
-  console.error('Error: DISCORD_BOT_TOKEN is not set in environment variables.');
+const DISCORD_USER_TOKEN = process.env.DISCORD_USER_TOKEN;
+if (!DISCORD_USER_TOKEN) {
+  console.error('Error: DISCORD_USER_TOKEN is not set in environment variables.');
   process.exit(1);
 }
 
@@ -18,7 +22,7 @@ const LM_SERVER_URL = process.env.LM_SERVER_URL || 'http://localhost:1234/v1';
 const LM_MODEL = process.env.LM_MODEL || null;
 const LM_TIMEOUT_MS = Math.max(1000, Number(process.env.LM_TIMEOUT_MS) || 120000);
 
-// Command permissions: only these Discord user IDs may use bot commands.
+// Command permissions: only these Discord user IDs may use commands.
 // Comma-separated in .env, e.g. AUTHORIZED_USER_IDS=123456789012345678,987654321098765432
 // If unset, commands are open to everyone (a warning is logged at startup).
 const AUTHORIZED_USER_IDS = (process.env.AUTHORIZED_USER_IDS || '')
@@ -55,11 +59,11 @@ function saveGlobalPrompt(text) {
 // Initialize global prompt
 globalPrompt = loadGlobalPrompt();
 
-// Global bot settings, persisted to settings.json so they survive restarts.
+// Global settings, persisted to settings.json so they survive restarts.
 const SETTINGS_FILE = 'settings.json';
 const DEFAULT_MEMORY_SIZE = 10;      // max messages fetched for context
 const DEFAULT_CONTEXT_CHARS = 4000;  // character budget for history (~1000 tokens)
-const DEFAULT_FOLLOWUP_SECONDS = 60; // how long the bot keeps responding without a new @mention
+const DEFAULT_FOLLOWUP_SECONDS = 60; // how long the account keeps responding without a new @mention
 const DEFAULT_COOLDOWN_SECONDS = 5;  // min gap between replies to the same user (anti-spam)
 const MAX_FETCH_LIMIT = 100;         // Discord API caps message fetches at 100
 
@@ -136,7 +140,7 @@ function getDisplayName(message) {
   return getUserDisplayName(message.guild, message.author);
 }
 
-// Show a typing indicator while the bot is generating a response.
+// Show a typing indicator while a reply is being generated.
 // Discord typing indicators expire after ~10 seconds, so refresh periodically.
 function startTypingIndicator(channel) {
   const sendTyping = () =>
@@ -188,19 +192,16 @@ async function callLM(messages) {
   }
 }
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.DirectMessages, // receive DMs
-    GatewayIntentBits.MessageContent
-  ]
-});
+// NOTE: unlike the regular bot, a user account receives every message in
+// every server it is in and has full message content automatically.
+// discord.js-selfbot-v13 ignores (and warns about) the `intents` option,
+// so none is passed here.
+const client = new Client({});
 
 client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Logged in as ${client.user.tag} (self-bot mode)`);
   if (AUTHORIZED_USER_IDS.length === 0) {
-    console.warn('AUTHORIZED_USER_IDS is not set - bot commands are open to everyone. Add it to your .env to restrict commands.');
+    console.warn('AUTHORIZED_USER_IDS is not set - commands are open to everyone. Add it to your .env to restrict commands.');
   }
 });
 
@@ -216,12 +217,12 @@ async function fetchReferencedMessage(msg) {
   }
 }
 
-// Timestamps of the bot's last reply, keyed "channelId:userId". Used for the
-// follow-up window (responding without a new @mention for a while) and the
-// anti-spam cooldown (minimum gap between replies to the same user).
+// Timestamps of the account's last reply, keyed "channelId:userId". Used for
+// the follow-up window (responding without a new @mention for a while) and
+// the anti-spam cooldown (minimum gap between replies to the same user).
 const lastReplyTimes = new Map();
 
-// Record that the bot just replied to this user in this channel.
+// Record that the account just replied to this user in this channel.
 function recordReply(msg) {
   const now = Date.now();
   // Prune stale entries to keep the map small
@@ -248,18 +249,18 @@ function isCoolingDown(msg) {
   return last !== undefined && Date.now() - last < seconds * 1000;
 }
 
-// Decide whether the bot should respond to a message, and collect any
+// Decide whether the account should respond to a message, and collect any
 // replied-to message that can add context.
-// Triggers: @mention of the bot anywhere in the message, a reply to one of
-// the bot's messages, a direct message, or an active follow-up window.
+// Triggers: @mention of this account anywhere in the message, a reply to one
+// of its messages, a direct message, or an active follow-up window.
 // The anti-spam cooldown overrides all of these.
 async function getResponseTrigger(msg) {
   const referenced = await fetchReferencedMessage(msg);
 
   const mentioned = msg.mentions.has(client.user);
-  const replyToBot = referenced !== null && referenced.author.id === client.user.id;
+  const replyToSelf = referenced !== null && referenced.author.id === client.user.id;
   // DMs: always respond; in guilds the follow-up window also counts
-  const shouldRespond = !msg.guild || mentioned || replyToBot || isInFollowupWindow(msg);
+  const shouldRespond = !msg.guild || mentioned || replyToSelf || isInFollowupWindow(msg);
 
   if (shouldRespond && isCoolingDown(msg)) {
     console.log(`${getDisplayName(msg)}: ${cleanMessageContent(msg) || '(no text)'} (ignored – cooldown active)`);
@@ -308,7 +309,7 @@ async function handleChatMessage(msg, referenced = null) {
   }
 }
 
-// Clean up message content for the model: strip the bot's own mention and
+// Clean up message content for the model: strip this account's own mention and
 // render user/role mentions as readable names.
 function cleanMessageContent(message) {
   let text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '');
@@ -325,7 +326,7 @@ function cleanMessageContent(message) {
 
 // Generate a reply for a single message and post it in the channel.
 async function generateAndSendReply(msg, referenced = null) {
-  // Let users know the bot is working on a reply
+  // Let users know a reply is being written
   const stopTyping = startTypingIndicator(msg.channel);
 
   try {
@@ -358,7 +359,7 @@ async function generateAndSendReply(msg, referenced = null) {
     const msgsArray = Array.from(fetched.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
     // History candidates: drop the triggering message and other bots'
-    // messages – only this bot's own replies count as 'assistant' turns.
+    // messages – only this account's own replies count as 'assistant' turns.
     const history = msgsArray.filter(
       (m) => m.id !== msg.id && !(m.author.bot && m.author.id !== client.user.id)
     );
@@ -423,11 +424,11 @@ async function generateAndSendReply(msg, referenced = null) {
       const apology = result.timedOut
         ? `Sorry, LM Studio didn't respond within ${Math.round(LM_TIMEOUT_MS / 1000)} seconds — it may be busy or offline.`
         : "Sorry, I couldn't get a response from the model.";
-      console.log(`Bot: ${apology}`);
+      console.log(`Reply: ${apology}`);
       return msg.reply(apology);
     }
 
-    // If the model echoed its own name prefix ("BotName: ..."), strip it
+    // If the model echoed its own name prefix ("Name: ..."), strip it
     let replyText = result.content;
     for (const name of [msg.guild?.members?.me?.displayName, client.user.globalName, client.user.username]) {
       const prefix = `${name}: `;
@@ -439,7 +440,7 @@ async function generateAndSendReply(msg, referenced = null) {
 
     if (!replyText) return; // model returned nothing usable
 
-    console.log(`Bot: ${replyText}`);
+    console.log(`Reply: ${replyText}`);
 
     try {
       await msg.reply(replyText); // reply-links the answer to the trigger message
@@ -453,7 +454,11 @@ async function generateAndSendReply(msg, referenced = null) {
 }
 
 client.on('messageCreate', async (msg) => {
-  if (msg.author.bot) return; // ignore bot messages
+  // CRITICAL for self-bot mode: the account receives its own messages, and a
+  // user account is not flagged as a bot. Without this check the account
+  // would reply to itself in a loop whenever it mentions itself.
+  if (msg.author.id === client.user.id) return;
+  if (msg.author.bot) return; // ignore other bots' messages
 
   // Handle command prefix '!'
   if (msg.content.startsWith('!')) {
@@ -470,7 +475,7 @@ client.on('messageCreate', async (msg) => {
         }
         globalPrompt = promptText.trim();
         saveGlobalPrompt(globalPrompt);
-        return msg.reply(`System prompt set for the bot.`);
+        return msg.reply('System prompt set.');
       }
 
       case 'memory_size': {
@@ -512,7 +517,7 @@ client.on('messageCreate', async (msg) => {
           setFollowupSeconds(num);
           const cur = getFollowupSeconds();
           return msg.reply(cur === 0
-            ? 'Follow-up window disabled – the bot again only responds to @mentions and replies.'
+            ? 'Follow-up window disabled – responding again only to @mentions and replies.'
             : `Follow-up window updated to ${cur} seconds (global).`);
         } else {
           const cur = getFollowupSeconds();
@@ -543,7 +548,7 @@ client.on('messageCreate', async (msg) => {
       }
 
       case 'help': {
-        const helpText = `**Discord AI Bot Commands**\n• !prompt <system prompt> – Set a system prompt that the bot will use globally.\n• !memory_size [<N>] – Show or set the number of previous messages (user+assistant) to include in context (global). Default is 10.\n• !context [<chars>] – Show or set the character budget for chat history (global). Default is 4000 (~1000 tokens).\n• !followup [<seconds>] – Show or set how long the bot keeps responding to you without a new @mention (global). Default is 60; 0 disables.\n• !cooldown [<seconds>] – Show or set the anti-spam cooldown between replies to the same user (global). Default is 5; 0 disables.\n• !help – Show this help message.`;
+        const helpText = `**Discord AI Self-Bot Commands**\n• !prompt <system prompt> – Set a system prompt used globally.\n• !memory_size [<N>] – Show or set the number of previous messages (user+assistant) to include in context (global). Default is 10.\n• !context [<chars>] – Show or set the character budget for chat history (global). Default is 4000 (~1000 tokens).\n• !followup [<seconds>] – Show or set how long the account keeps responding to you without a new @mention (global). Default is 60; 0 disables.\n• !cooldown [<seconds>] – Show or set the anti-spam cooldown between replies to the same user (global). Default is 5; 0 disables.\n• !help – Show this help message.`;
         return msg.reply(helpText);
       }
 
@@ -552,7 +557,7 @@ client.on('messageCreate', async (msg) => {
         break;
     }
   } else {
-    // Normal user message – first decide whether the bot should respond at all
+    // Normal user message – first decide whether the account should respond at all
     const { respond, referenced } = await getResponseTrigger(msg);
     if (!respond) return;
 
@@ -560,6 +565,7 @@ client.on('messageCreate', async (msg) => {
   }
 });
 
-client.login(DISCORD_BOT_TOKEN).catch((err) => {
+client.login(DISCORD_USER_TOKEN).catch((err) => {
   console.error('Failed to login:', err);
+  console.error('Make sure DISCORD_USER_TOKEN contains a valid *user* token (not a bot token).');
 });
